@@ -1,0 +1,16 @@
+{
+  "name": "heuristica",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Heuristica — единый проект: Express (backend) раздаёт собранный React-фронтенд и API",
+  "scripts": {
+    "postinstall": "npm --prefix backend install --omit=dev && npm --prefix frontend install",
+    "build": "npm --prefix frontend run build",
+    "start": "node backend/src/server.js",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

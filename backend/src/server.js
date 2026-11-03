@@ -1,4 +1,5 @@
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -12,14 +13,25 @@ require('./config/passport');
 
 const app = express();
 
+// В прод-сборке фронтенд отдаётся тем же Express-приложением (same-origin),
+// поэтому CORS нужен только при локальной разработке (Vite на другом порту).
+const isProduction = process.env.NODE_ENV === 'production';
+
 // Базовые middleware: безопасность, CORS, JSON, cookies, логи, passport
-app.use(helmet());
 app.use(
-  cors({
-    origin: process.env.FRONTEND_URL || DEFAULT_FRONTEND_URL,
-    credentials: true
+  helmet({
+    // Monaco (CDN-воркеры), Pyodide и Google OAuth требуют внешних скриптов/соединений
+    contentSecurityPolicy: false
   })
 );
+if (!isProduction) {
+  app.use(
+    cors({
+      origin: process.env.FRONTEND_URL || DEFAULT_FRONTEND_URL,
+      credentials: true
+    })
+  );
+}
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
@@ -35,8 +47,17 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/problems', require('./routes/problems'));
 app.use('/api/judge', require('./routes/judge'));
 
-// 404 и единый обработчик ошибок
-app.use((req, res) => res.status(404).json({ error: 'Маршрут не найден' }));
+// Неизвестные /api-маршруты — всегда JSON 404 (а не index.html)
+app.use('/api', (req, res) => res.status(404).json({ error: 'Маршрут не найден' }));
+
+// Статика собранного фронтенда (frontend/dist): JS/CSS-ассеты и favicon
+const distDir = path.join(__dirname, '..', '..', 'frontend', 'dist');
+app.use(express.static(distDir));
+
+// Все остальные GET-страницы React Router отдаются через index.html (SPA fallback)
+app.get('*', (req, res) => res.sendFile(path.join(distDir, 'index.html')));
+
+// Единый обработчик ошибок
 app.use(require('./middleware/errorHandler').errorHandler);
 
 const PORT = process.env.PORT || DEFAULT_PORT;

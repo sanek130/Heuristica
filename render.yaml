@@ -1,22 +1,32 @@
+# Единый Blueprint: один web-сервис (Express + собранный React-фронтенд).
+# Render собирает frontend и backend из корня репозитория и запускает node backend/src/server.js.
 services:
   - type: web
-    name: heuristica-backend
+    name: heuristica
     runtime: node
-    rootDir: backend
-    buildCommand: npm install
-    startCommand: node src/server.js
+    rootDir: .
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: node backend/src/server.js
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
       - key: MONGODB_URI
         sync: false
+      # В прод-сборке фронтенд и API живут на одном origin, поэтому
+      # VITE_API_URL оставляем пустым — запросы идут на тот же домен.
+      - key: VITE_API_URL
+        value: ''
+      # URL этого сервиса на Render (https://heuristica.onrender.com) —
+      # используется для редиректов после Google OAuth.
       - key: FRONTEND_URL
         sync: false
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET
         sync: false
+      # https://<имя-сервиса>.onrender.com/api/auth/google/callback
       - key: GOOGLE_CALLBACK_URL
         sync: false
       - key: JWT_SECRET
@@ -27,17 +37,3 @@ services:
         sync: false
       - key: ADMIN_EMAILS
         sync: false
-
-  - type: web
-    name: heuristica-frontend
-    runtime: static
-    rootDir: frontend
-    buildCommand: npm install && npm run build
-    staticPublishPath: dist
-    envVars:
-      - key: VITE_API_URL
-        sync: false
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
