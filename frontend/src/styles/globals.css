@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body { @apply bg-background text-text-primary font-sans antialiased; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { @apply bg-surface; }
+  ::-webkit-scrollbar-thumb { @apply bg-border rounded-full hover:bg-accent-blue; }
+}
+
+@layer components {
+  .btn-primary { @apply relative overflow-hidden px-6 py-3 bg-accent-blue text-white rounded-lg font-medium transition-all duration-300 hover:shadow-lg hover:shadow-accent-blue/30; }
+  .btn-secondary { @apply relative overflow-hidden px-6 py-3 bg-surface text-text-secondary border border-border rounded-lg font-medium transition-all duration-300 hover:border-accent-blue hover:text-text-primary; }
+}
