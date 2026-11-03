@@ -3,6 +3,29 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 const PYODIDE_VERSION = '0.26.2';
 const BASE = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
 
+// Привязка stdin/stdout/stderr для запуска пользовательского кода
+const SETUP_PY = `
+import sys, io
+sys.stdin = io.StringIO(__heuristica_stdin)
+sys.stdout = io.StringIO()
+sys.stderr = io.StringIO()
+`;
+const TEARDOWN_PY = 'sys.stdin = sys.__stdin__; sys.stdout = sys.__stdout__; sys.stderr = sys.__stderr__';
+
+/** Инжектит pyodide.js с CDN и возвращает Promise<pyodide>. */
+async function loadPyodideRuntime() {
+  if (!window.loadPyodide) {
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = `${BASE}pyodide.js`;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('Не удалось загрузить Pyodide'));
+      document.head.appendChild(script);
+    });
+  }
+  return window.loadPyodide({ indexURL: BASE });
+}
+
 export default function usePyodide() {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState(null);
@@ -11,29 +34,20 @@ export default function usePyodide() {
   useEffect(() => {
     let cancelled = false;
 
-    const load = async () => {
-      try {
-        if (!window.loadPyodide) {
-          await new Promise((resolve, reject) => {
-            const script = document.createElement('script');
-            script.src = `${BASE}pyodide.js`;
-            script.onload = resolve;
-            script.onerror = () => reject(new Error('Не удалось загрузить Pyodide'));
-            document.head.appendChild(script);
-          });
-        }
-        const py = await window.loadPyodide({ indexURL: BASE });
+    loadPyodideRuntime()
+      .then(py => {
         if (!cancelled) {
           pyodideRef.current = py;
           setReady(true);
         }
-      } catch (e) {
+      })
+      .catch(e => {
         if (!cancelled) setError(e.message);
-      }
-    };
+      });
 
-    load();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const runCode = useCallback(async (code, stdin = '') => {
@@ -41,12 +55,7 @@ export default function usePyodide() {
     const py = pyodideRef.current;
 
     py.globals.set('__heuristica_stdin', stdin);
-    py.runPython(`
-import sys, io
-sys.stdin = io.StringIO(__heuristica_stdin)
-sys.stdout = io.StringIO()
-sys.stderr = io.StringIO()
-`);
+    py.runPython(SETUP_PY);
 
     try {
       await py.runPythonAsync(code);
@@ -56,7 +65,7 @@ sys.stderr = io.StringIO()
     } catch (e) {
       return { success: false, output: '', error: e.message };
     } finally {
-      py.runPython('sys.stdin = sys.__stdin__; sys.stdout = sys.__stdout__; sys.stderr = sys.__stderr__');
+      py.runPython(TEARDOWN_PY);
     }
   }, []);
 

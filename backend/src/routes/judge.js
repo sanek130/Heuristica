@@ -1,19 +1,25 @@
 const express = require('express');
 const Problem = require('../models/Problem');
 const Submission = require('../models/Submission');
-const User = require('../models/User');
 const { protect } = require('../middleware/authMiddleware');
 const judge0 = require('../services/judge0Service');
+const { recordSolvedProblem } = require('../services/userProgressService');
+const { asyncHandler, ApiError, externalErrorMessage } = require('../utils/errors');
+const { hintPenalty, finalVerdict, scoreFor } = require('../utils/scoring');
+
 const router = express.Router();
 
-router.post('/submit', protect, async (req, res, next) => {
-  try {
+// Отправка решения: создаёт запись Submission и ставит каждый скрытый тест в очередь Judge0
+router.post(
+  '/submit',
+  protect,
+  asyncHandler(async (req, res) => {
     const { problemId, code, hintsUsed = [] } = req.body;
-    if (!problemId || !code?.trim()) return res.status(400).json({ error: 'Нужны problemId и code' });
+    if (!problemId || !code?.trim()) throw new ApiError(400, 'Нужны problemId и code');
 
     const problem = await Problem.findById(problemId);
-    if (!problem) return res.status(404).json({ error: 'Задача не найдена' });
-    if (!problem.hiddenTests?.length) return res.status(400).json({ error: 'У задачи нет скрытых тестов' });
+    if (!problem) throw new ApiError(404, 'Задача не найдена');
+    if (!problem.hiddenTests?.length) throw new ApiError(400, 'У задачи нет скрытых тестов');
 
     const submission = await Submission.create({
       userId: req.user._id,
@@ -24,99 +30,70 @@ router.post('/submit', protect, async (req, res, next) => {
       verdict: 'Pending'
     });
 
-    const tokens = [];
-    for (const test of problem.hiddenTests) {
-      const token = await judge0.submitToJudge(
-        code, test.input, test.output, problem.timeLimit, problem.memoryLimit
-      );
-      tokens.push(token);
+    try {
+      const tokens = [];
+      for (const test of problem.hiddenTests) {
+        tokens.push(
+          await judge0.submitToJudge(code, test.input, test.output, problem.timeLimit, problem.memoryLimit)
+        );
+      }
+      submission.judge0Token = JSON.stringify(tokens);
+      await submission.save();
+    } catch (error) {
+      // Judge0 не должен раскрывать подробности пользователю
+      console.error('Judge0 error:', externalErrorMessage(error));
+      throw new ApiError(502, 'Ошибка отправки на проверку');
     }
 
-    submission.judge0Token = JSON.stringify(tokens);
-    await submission.save();
-
     res.status(202).json({ submissionId: submission._id, tokens });
-  } catch (error) {
-    // Judge0 не должен раскрывать подробности пользователю
-    console.error('Judge0 error:', error.response?.data || error.message);
-    next(Object.assign(new Error('Ошибка отправки на проверку'), { status: 502 }));
-  }
-});
+  })
+);
 
-router.get('/status/:submissionId', protect, async (req, res, next) => {
-  try {
+// Статус проверки: собирает результаты всех тестов, при завершении начисляет баллы и обновляет прогресс
+router.get(
+  '/status/:submissionId',
+  protect,
+  asyncHandler(async (req, res) => {
     const submission = await Submission.findOne({
       _id: req.params.submissionId,
       userId: req.user._id
     });
-    if (!submission) return res.status(404).json({ error: 'Отправка не найдена' });
+    if (!submission) throw new ApiError(404, 'Отправка не найдена');
 
-    const tokens = JSON.parse(submission.judge0Token || '[]');
-    const results = [];
-    let passed = 0;
-    let finished = true;
-
-    for (const token of tokens) {
-      const result = await judge0.getSubmissionResult(token);
-      const verdict = judge0.mapStatus(result.status?.id);
-      if (verdict === 'Accepted') passed++;
-      else finished = false;
-      results.push({
-        verdict,
-        time: result.time,
-        memory: result.memory,
-        stdout: result.stdout ? Buffer.from(result.stdout, 'base64').toString('utf8') : '',
-        stderr: result.stderr ? Buffer.from(result.stderr, 'base64').toString('utf8') : ''
-      });
+    let results;
+    let passed;
+    let finished;
+    try {
+      const tokens = JSON.parse(submission.judge0Token || '[]');
+      const rawResults = await Promise.all(
+        tokens.map(token => judge0.getSubmissionResult(token).then(judge0.normalizeResult))
+      );
+      passed = rawResults.filter(r => r.verdict === 'Accepted').length;
+      finished = passed === rawResults.length;
+      results = rawResults;
+    } catch (error) {
+      console.error('Judge0 status error:', externalErrorMessage(error));
+      throw new ApiError(502, 'Ошибка получения результата');
     }
 
     if (finished) {
-      const penalty = (submission.hintsUsed || []).reduce((sum, level) => {
-        const hint = submission.hintsUsed ? null : null;
-        return sum;
-      }, 0);
-
-      // Штраф берём из задачи по открытым уровням подсказок
       const problem = await Problem.findById(submission.problemId);
-      const hintPenalty = (submission.hintsUsed || []).reduce((sum, level) => {
-        const found = problem?.hints?.find(h => h.level === level);
-        return sum + (found?.penalty || 0);
-      }, 0);
-
-      const allPassed = passed === submission.totalTests;
-      const score = allPassed ? Math.max(0, (problem?.maxScore || 100) - hintPenalty) : 0;
+      const penalty = hintPenalty(problem, submission.hintsUsed);
+      const verdict = finalVerdict(passed, submission.totalTests, results);
+      const score = scoreFor(problem, penalty, verdict === 'Accepted');
 
       submission.testPassed = passed;
-      submission.verdict = allPassed ? 'Accepted' : results.find(r => r.verdict !== 'Accepted')?.verdict || 'WrongAnswer';
+      submission.verdict = verdict;
       submission.score = score;
       await submission.save();
 
-      if (allPassed) {
-        const user = await User.findById(req.user._id);
-        const progress = user.progress.find(p => p.problemId.equals(submission.problemId));
-        if (progress) {
-          progress.solved = true;
-          progress.bestScore = Math.max(progress.bestScore, score);
-          progress.attempts += 1;
-          progress.lastSubmission = new Date();
-        } else {
-          user.progress.push({
-            problemId: submission.problemId,
-            solved: true,
-            bestScore: score,
-            attempts: 1,
-            lastSubmission: new Date()
-          });
-        }
-        await user.save();
+      if (verdict === 'Accepted') {
+        await recordSolvedProblem(req.user._id, submission.problemId, score);
       }
     }
 
     res.json({ submission, results, finished });
-  } catch (error) {
-    console.error('Judge0 status error:', error.response?.data || error.message);
-    next(Object.assign(new Error('Ошибка получения результата'), { status: 502 }));
-  }
-});
+  })
+);
 
 module.exports = router;

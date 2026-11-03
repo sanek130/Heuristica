@@ -1,28 +1,30 @@
 const express = require('express');
 const passport = require('passport');
 const { protect } = require('../middleware/authMiddleware');
+const { TOKEN_COOKIE_NAME, cookieOptions } = require('../config/constants');
+
 const router = express.Router();
+
+const frontendUrl = () => process.env.FRONTEND_URL;
 
 router.get('/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
 
 router.get(
   '/google/callback',
-  passport.authenticate('google', { failureRedirect: `${process.env.FRONTEND_URL}/login`, session: false }),
+  passport.authenticate('google', {
+    failureRedirect: `${frontendUrl()}/login`,
+    session: false
+  }),
   (req, res) => {
-    res.cookie('token', req.user.token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000
-    });
-    res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
+    res.cookie(TOKEN_COOKIE_NAME, req.user.token, cookieOptions());
+    res.redirect(`${frontendUrl()}/dashboard`);
   }
 );
 
 router.get('/me', protect, (req, res) => res.json(req.user));
 
 router.post('/logout', (req, res) => {
-  res.clearCookie('token');
+  res.clearCookie(TOKEN_COOKIE_NAME);
   res.json({ message: 'Вы вышли из системы' });
 });
 
