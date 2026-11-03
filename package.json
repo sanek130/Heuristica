@@ -5,6 +5,7 @@
   "description": "Heuristica — единый проект: Express (backend) раздаёт собранный React-фронтенд и API",
   "scripts": {
     "postinstall": "npm --prefix backend install --omit=dev && npm --prefix frontend install",
+    "install-all": "npm run postinstall",
     "build": "npm --prefix frontend run build",
     "start": "node backend/src/server.js",
     "dev:backend": "npm --prefix backend run dev",
